@@ -1,153 +1,81 @@
 """
-Extractor: Times da NBA
-========================
+Extractor: Times com IDs da balldontlie
+=======================================
+Necessário porque os jogos/stats vêm com IDs da balldontlie (1-30),
+não com os IDs oficiais da NBA. Esta tabela permite JOIN entre as duas.
 
-Extrai a lista de times da NBA via nba_api e carrega na camada Bronze do Supabase.
-
-Uso:
-    python scripts/extratores/extrair_times.py
-
-Fonte:
-    nba_api.stats.static.teams.get_teams()
-
-Tabela destino:
-    bronze.times
+Tabela destino: bronze.times_balldontlie
+Endpoint: GET /nba/v1/teams (1 request, retorna todos os 30 times)
 """
+import logging
+import sys
+from pathlib import Path
 
-import os
-import uuid
-from datetime import datetime, timezone
-from typing import List, Dict, Any
+sys.path.insert(0, str(Path(__file__).parent))
+from _client import BalldontlieClient
+from _supabase import (
+    iniciar_execucao,
+    finalizar_execucao,
+    upsert_em_lote,
+)
 
-from dotenv import load_dotenv
-from nba_api.stats.static import teams
-import psycopg2
-from psycopg2.extras import execute_values
-
-# -----------------------------------------------------------------------------
-# Configuração
-# -----------------------------------------------------------------------------
-load_dotenv()
-
-# TODO 1: monta o dicionário `CONFIG_BANCO` lendo as variáveis do .env
-# Dica: olha o validar_supabase.py — você já fez isso lá!
-CONFIG_BANCO = {
-    "host": os.getenv("SUPABASE_HOST"),
-    "port": os.getenv("SUPABASE_PORT"),
-    "dbname": os.getenv("SUPABASE_DB"),
-    "user": os.getenv("SUPABASE_USER"),
-    "password": os.getenv("SUPABASE_PASSWORD")
-}
-
-# Identificador único dessa execução (rastreabilidade)
-ID_EXECUCAO_PIPELINE = str(uuid.uuid4())
-FONTE = "nba_api.stats.static.teams"
+logger = logging.getLogger(__name__)
 
 
-# -----------------------------------------------------------------------------
-# Extração
-# -----------------------------------------------------------------------------
-def extrair_times() -> List[Dict[str, Any]]:
-    dados_times = teams.get_teams()
-    return dados_times
+COLUNAS = [
+    'id', 'abbreviation', 'city', 'conference',
+    'division', 'full_name', 'name', 'execucao_id',
+]
 
 
+def main(**context) -> dict:
+    execucao_id = iniciar_execucao('extrair_times_balldontlie')
+    logger.info(f"🏀 Iniciando extração de times balldontlie | execucao={execucao_id}")
 
-# -----------------------------------------------------------------------------
-# Carga (Bronze)
-# -----------------------------------------------------------------------------
-def criar_tabela_bronze(conexao) -> None:
-    sql = """
-    CREATE TABLE IF NOT EXISTS bronze.times (
-            id                    BIGINT PRIMARY KEY,
-            full_name             TEXT,
-            abbreviation          TEXT,
-            nickname              TEXT,
-            city                  TEXT,
-            state                 TEXT,
-            year_founded          INTEGER,
-            data_ingestao         TIMESTAMPTZ DEFAULT NOW(),
-            id_execucao_pipeline  UUID,
-            fonte                 TEXT
-        );
-        """
-    with conexao.cursor() as cursor:
-        cursor.execute(sql)
-    conexao.commit()
-
-
-def carregar_para_bronze(conexao, dados_times: List[Dict[str, Any]]) -> int:
-    sql = """
-        INSERT INTO bronze.times (
-            id, full_name, abbreviation, nickname, city, state, year_founded,
-            id_execucao_pipeline, fonte
-        )
-        VALUES %s
-        ON CONFLICT (id) DO UPDATE SET
-            full_name             = EXCLUDED.full_name,
-            abbreviation          = EXCLUDED.abbreviation,
-            nickname              = EXCLUDED.nickname,
-            city                  = EXCLUDED.city,
-            state                 = EXCLUDED.state,
-            year_founded          = EXCLUDED.year_founded,
-            data_ingestao         = NOW(),
-            id_execucao_pipeline  = EXCLUDED.id_execucao_pipeline,
-            fonte                 = EXCLUDED.fonte;
-    """
-
-    valores = [
-        (
-            time["id"],
-            time["full_name"],
-            time["abbreviation"],
-            time["nickname"],
-            time["city"],
-            time["state"],
-            time["year_founded"],
-            ID_EXECUCAO_PIPELINE,
-            FONTE,
-        )
-        for time in dados_times
-    ]
-
-    with conexao.cursor() as cursor:
-        execute_values(cursor, sql, valores)
-        linhas_afetadas = cursor.rowcount
-    conexao.commit()
-
-    return linhas_afetadas
-
-
-
-# -----------------------------------------------------------------------------
-# Main
-# -----------------------------------------------------------------------------
-def main() -> None:
-    print(f"🏀 Iniciando extração de times | execucao={ID_EXECUCAO_PIPELINE}")
-    print(f"   Timestamp: {datetime.now(timezone.utc).isoformat()}")
-
-    conexao = None
     try:
-        dados_times = extrair_times()
-        print(f"   Times extraídos: {len(dados_times)}")
+        with BalldontlieClient() as client:
+            times = list(client.paginate('/teams'))
 
-        conexao = psycopg2.connect(**CONFIG_BANCO)
-    
-        criar_tabela_bronze(conexao)
+        logger.info(f"   📦 {len(times)} times recebidos")
 
-        linhas_afetadas = carregar_para_bronze(conexao, dados_times)
-        print(f"   Linhas afetadas: {linhas_afetadas}")
+        linhas = [
+            (
+                t['id'],
+                t.get('abbreviation'),
+                t.get('city'),
+                t.get('conference'),
+                t.get('division'),
+                t.get('full_name'),
+                t.get('name'),
+                execucao_id,
+            )
+            for t in times
+        ]
 
-        print(f"✅ Extração concluída com sucesso")
-        
-    except Exception as erro:
-        print(f"❌ Erro durante a extração: {erro}")
+        registros = upsert_em_lote(
+            tabela='bronze.times_balldontlie',
+            colunas=COLUNAS,
+            linhas=linhas,
+            pk_colunas=['id'],
+        )
+
+        finalizar_execucao(execucao_id, 'sucesso', registros=registros)
+        logger.info(f"✅ Concluído | {registros} times balldontlie")
+
+        return {
+            'execucao_id': execucao_id,
+            'registros': registros,
+        }
+
+    except Exception as e:
+        logger.exception(f"❌ Erro: {e}")
+        finalizar_execucao(execucao_id, 'falha', mensagem_erro=str(e))
         raise
 
-    finally:
-        if conexao is not None:
-            conexao.close()
-            print("🔌 Conexão fechada")
-            
-if __name__ == "__main__":
+
+if __name__ == '__main__':
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+    )
     main()

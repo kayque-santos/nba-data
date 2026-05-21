@@ -1,0 +1,45 @@
+version: 2
+
+models:
+  - name: stg_times
+    description: "Times da NBA - cadastro"
+    columns:
+      - name: time_id
+        description: "ID do time (PK)"
+        tests:
+          - unique
+          - not_null
+
+  - name: stg_jogadores
+    description: "Cadastro de jogadores"
+    columns:
+      - name: jogador_id
+        tests:
+          - unique
+          - not_null
+      - name: time_id
+        tests:
+          - relationships:
+              arguments:
+                to: ref('stg_times')
+                field: time_id
+
+  - name: stg_jogos
+    description: "Calendário e placares"
+    columns:
+      - name: jogo_id
+        tests:
+          - unique
+          - not_null
+      - name: time_mandante_id
+        tests:
+          - relationships:
+              arguments:
+                to: ref('stg_times')
+                field: time_id
+      - name: time_visitante_id
+        tests:
+          - relationships:
+              arguments:
+                to: ref('stg_times')
+                field: time_id

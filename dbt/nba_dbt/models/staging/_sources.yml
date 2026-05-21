@@ -1,0 +1,15 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: "Camada Bronze - dados crus da balldontlie.io"
+    schema: bronze
+    tables:
+      - name: times_balldontlie
+        description: "Times da NBA"
+      - name: jogadores
+        description: "Cadastro de jogadores"
+      - name: jogos
+        description: "Calendário + placares"
+      - name: execucoes
+        description: "Auditoria de execuções dos extractors"
